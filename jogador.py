@@ -22,9 +22,10 @@ class Jogador:
         self.bonus_vel_wk_base = 7.5
         self.fator_wk_mod = 1.0
 
-        # Slide / Air Slide + multiplicador afetado pelo modificador 'Escorregou na Real'
+        # Slide / Air Slide + Slide Jump + multiplicador afetado por 'Escorregou na Real'
         self.shift_pressionado_antes = False
         self.fator_slide_mod = 1.0
+        self.duracao_boost_slide_jump = 0.85
 
         # Configurações do Parry (Tecla E ou Botão Direito do Mouse)
         self.janela_parry_max = 0.16
@@ -66,6 +67,11 @@ class Jogador:
         self.bonus_vel_slide_atual = 0.0
         self.slide_foi_no_ar = False
 
+        # Controle do Slide Jump (uso único até a energia extra do slide acabar)
+        self.timer_boost_slide_jump = 0.0
+        self.bonus_vel_slide_jump_atual = 0.0
+        self.slide_jump_disponivel = True
+
         self.timer_parry_ativo = 0.0
         self.cooldown_parry = 0.0
         self.timer_boost_parry = 0.0
@@ -91,6 +97,7 @@ class Jogador:
         self.morto = True
         self.rastro.clear()
         self.timer_slide = 0.0
+        self.timer_boost_slide_jump = 0.0
         self.timer_parry_ativo = 0.0
         self.timer_boost_wk = 0.0
         self.timer_boost_parry = 0.0
@@ -186,6 +193,19 @@ class Jogador:
         return self.timer_slide > 0.0
 
     @property
+    def boost_slide_jump_ativo(self):
+        return self.timer_boost_slide_jump > 0.0
+
+    @property
+    def tem_energia_slide_extra(self):
+        """Indica se ainda há velocidade extra proveniente do Slide ou Slide Jump."""
+        return (
+            self.slide_ativo or
+            self.boost_slide_jump_ativo or
+            (self.velocidade_atual > self.vel_max + 0.15 and not self.boost_wk_ativo and not self.boost_parry_ativo)
+        )
+
+    @property
     def parry_ativo(self):
         return (not self.parry_bloqueado) and (self.timer_parry_ativo > 0.0)
 
@@ -279,10 +299,16 @@ class Jogador:
             self.timer_boost_wk = max(0.0, self.timer_boost_wk - dt)
         if self.timer_slide > 0.0:
             self.timer_slide = max(0.0, self.timer_slide - dt)
+        if self.timer_boost_slide_jump > 0.0:
+            self.timer_boost_slide_jump = max(0.0, self.timer_boost_slide_jump - dt)
         if self.cooldown_slide > 0.0:
             self.cooldown_slide = max(0.0, self.cooldown_slide - dt)
         if self.timer_lentidao_bigon > 0.0:
             self.timer_lentidao_bigon = max(0.0, self.timer_lentidao_bigon - dt)
+
+        # Recarrega o Slide Jump assim que toda a energia extra do Slide acabar
+        if not self.slide_jump_disponivel and not self.tem_energia_slide_extra:
+            self.slide_jump_disponivel = True
 
         if self.timer_parry_ativo > 0.0:
             self.timer_parry_ativo = max(0.0, self.timer_parry_ativo - dt)
@@ -335,11 +361,63 @@ class Jogador:
 
             self.velocidade_atual = max(self.velocidade_atual, self.vel_max + self.bonus_vel_slide_atual)
 
+        # Leitura do Pulo / Wall Kick / Slide Jump
+        espaco_agora = teclas[pygame.K_SPACE]
+        apertou_espaco = espaco_agora and not self.espaco_pressionado_antes
+        self.espaco_pressionado_antes = espaco_agora
+
+        normal_parede = self.detectar_normal_parede(config, paredes)
+        self.perto_parede_no_ar = (not self.no_chao) and self.pode_wall_kick and (normal_parede is not None)
+
+        if apertou_espaco:
+            if self.no_chao:
+                # Slide Jump: pular durante o Slide conserva o embalo extra do Slide (1 uso até zerar)
+                if self.slide_ativo and self.slide_jump_disponivel:
+                    self.slide_jump_disponivel = False
+                    self.timer_slide = 0.0
+                    self.timer_boost_slide_jump = self.duracao_boost_slide_jump
+                    self.bonus_vel_slide_jump_atual = max(
+                        self.bonus_vel_slide_atual,
+                        max(0.0, self.velocidade_atual - self.vel_max)
+                    )
+                    self.velocidade_atual = max(
+                        self.velocidade_atual,
+                        self.vel_max + self.bonus_vel_slide_jump_atual
+                    )
+
+                self.vel_z = self.forca_pulo
+                self.no_chao = False
+                self.pode_wall_kick = True
+
+            elif self.perto_parede_no_ar:
+                nx, ny = normal_parede
+                self.vel_z = self.forca_pulo * 1.05
+                self.pode_wall_kick = False
+
+                rebote_x = nx * 1.4 + dx * 0.8
+                rebote_y = ny * 1.4 + dy * 0.8
+                comp_rebote = math.hypot(rebote_x, rebote_y)
+                if comp_rebote > 0:
+                    self.dir_x = rebote_x / comp_rebote
+                    self.dir_y = rebote_y / comp_rebote
+
+                self.timer_boost_wk = self.duracao_boost_wk
+                self.velocidade_atual = max(self.velocidade_atual, self.vel_max + self.bonus_vel_wk)
+
         bonus_wk = self.bonus_vel_wk * (self.timer_boost_wk / self.duracao_boost_wk) if self.boost_wk_ativo else 0.0
         duracao_ref_slide = 0.65 if self.slide_foi_no_ar else 0.45
         bonus_sl = self.bonus_vel_slide_atual * (self.timer_slide / duracao_ref_slide) if self.slide_ativo else 0.0
+        # Conserva a velocidade extra do Slide durante o Slide Jump
+        bonus_sj = self.bonus_vel_slide_jump_atual if self.boost_slide_jump_ativo else 0.0
         bonus_pr = self.bonus_vel_parry * (self.timer_boost_parry / self.duracao_boost_parry) if self.boost_parry_ativo else 0.0
-        vel_max_atual = self.vel_max + max(bonus_wk, bonus_sl, bonus_pr)
+        vel_max_atual = self.vel_max + max(bonus_wk, bonus_sl, bonus_sj, bonus_pr)
+
+        tem_boost_ativo = (
+            self.boost_wk_ativo or
+            self.slide_ativo or
+            self.boost_slide_jump_ativo or
+            self.boost_parry_ativo
+        )
 
         if dx != 0 or dy != 0:
             comprimento = math.hypot(dx, dy)
@@ -360,17 +438,17 @@ class Jogador:
                     excesso = self.velocidade_atual - self.vel_min
                     self.velocidade_atual = self.vel_min + (excesso * 0.60)
                 else:
-                    if not (self.boost_wk_ativo or self.slide_ativo or self.boost_parry_ativo):
+                    if not tem_boost_ativo:
                         self.velocidade_atual = self.vel_min
 
             self.dir_x = dx
             self.dir_y = dy
         else:
-            if not (self.boost_wk_ativo or self.slide_ativo or self.boost_parry_ativo):
+            if not tem_boost_ativo:
                 self.velocidade_atual = max(0.0, self.velocidade_atual - self.desaceleracao)
 
         if self.velocidade_atual > vel_max_atual:
-            taxa_queda = 0.65 if (not self.boost_wk_ativo and not self.slide_foi_no_ar and not self.boost_parry_ativo) else 0.35
+            taxa_queda = 0.65 if (not tem_boost_ativo and not self.slide_foi_no_ar) else 0.35
             self.velocidade_atual = max(vel_max_atual, self.velocidade_atual - taxa_queda)
 
         if self.lento_por_bigon and not self.boost_parry_ativo:
@@ -399,35 +477,8 @@ class Jogador:
         if self.resolver_colisao_paredes(paredes):
             bateu_parede = True
 
-        if bateu_parede and self.no_chao and not (self.boost_wk_ativo or self.slide_ativo or self.boost_parry_ativo):
+        if bateu_parede and self.no_chao and not tem_boost_ativo:
             self.velocidade_atual = min(self.velocidade_atual, self.vel_min)
-
-        espaco_agora = teclas[pygame.K_SPACE]
-        apertou_espaco = espaco_agora and not self.espaco_pressionado_antes
-        self.espaco_pressionado_antes = espaco_agora
-
-        normal_parede = self.detectar_normal_parede(config, paredes)
-        self.perto_parede_no_ar = (not self.no_chao) and self.pode_wall_kick and (normal_parede is not None)
-
-        if apertou_espaco:
-            if self.no_chao:
-                self.vel_z = self.forca_pulo
-                self.no_chao = False
-                self.pode_wall_kick = True
-            elif self.perto_parede_no_ar:
-                nx, ny = normal_parede
-                self.vel_z = self.forca_pulo * 1.05
-                self.pode_wall_kick = False
-
-                rebote_x = nx * 1.4 + dx * 0.8
-                rebote_y = ny * 1.4 + dy * 0.8
-                comp_rebote = math.hypot(rebote_x, rebote_y)
-                if comp_rebote > 0:
-                    self.dir_x = rebote_x / comp_rebote
-                    self.dir_y = rebote_y / comp_rebote
-
-                self.timer_boost_wk = self.duracao_boost_wk
-                self.velocidade_atual = max(self.velocidade_atual, self.vel_max + self.bonus_vel_wk)
 
         self.z += self.vel_z
         if not self.no_chao:
@@ -447,6 +498,8 @@ class Jogador:
             tipo_rastro = "PARRY"
         elif self.boost_wk_ativo:
             tipo_rastro = "WK"
+        elif self.boost_slide_jump_ativo:
+            tipo_rastro = "SLIDE_JUMP"
         elif self.slide_ativo:
             tipo_rastro = "SLIDE"
 
@@ -499,6 +552,8 @@ class Jogador:
                     cor_rastro = (255, int(235 + 20 * proporcao), int(180 + 75 * proporcao))
                 elif tipo == "WK":
                     cor_rastro = (60, int(180 + 75 * proporcao), 255)
+                elif tipo == "SLIDE_JUMP":
+                    cor_rastro = (255, int(155 + 75 * proporcao), int(40 + 55 * proporcao))
                 elif tipo == "SLIDE":
                     cor_rastro = (255, int(100 + 80 * proporcao), 40)
                 else:
@@ -539,6 +594,9 @@ class Jogador:
                 espessura = 3
             elif self.boost_wk_ativo:
                 cor_borda = COR_WALL_KICK
+                espessura = 3
+            elif self.boost_slide_jump_ativo:
+                cor_borda = COR_SLIDE
                 espessura = 3
             else:
                 cor_borda = COR_JOGADOR_BORDA

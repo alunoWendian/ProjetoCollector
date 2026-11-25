@@ -161,7 +161,7 @@ def desenhar_terreno(superficie, camera, config):
     pygame.draw.polygon(superficie, COR_BORDA_MAPA, pontos_chao, 3)
 
 
-def desenhar_radar(superficie, jogador, cristais, paredes, inimigos, config):
+def desenhar_radar(superficie, jogador, cristais, paredes, minas, inimigos, config):
     from perigo import Perseqtor, Bigon
 
     tamanho_radar = 140
@@ -188,6 +188,10 @@ def desenhar_radar(superficie, jogador, cristais, paredes, inimigos, config):
         w_rad = max(2, p2x - p1x)
         h_rad = max(2, p2y - p1y)
         pygame.draw.rect(superficie, COR_PAREDE_BORDA, (p1x, p1y, w_rad, h_rad))
+
+    for mina in minas:
+        mx, my = para_radar(mina.x, mina.y)
+        pygame.draw.circle(superficie, (255, 125, 55), (mx, my), 3)
 
     for cristal in cristais:
         cx, cy = para_radar(cristal.x, cristal.y)
@@ -224,6 +228,19 @@ def desenhar_hud_superior(superficie, pontos, cristais, inimigos, config, fonte,
     surf_mult.set_alpha(175)
     superficie.blit(surf_mult, (20, 44))
 
+    offset_info_x = 20 + surf_mult.get_width() + 18
+
+    if config.stacks_cabuum > 0:
+        cor_m = (255, 85, 95) if config.explosoes_mina_sofridas >= 2 else (255, 145, 70)
+        surf_minas = fonte_mini.render(
+            f"Explosões: {config.explosoes_mina_sofridas}/{config.max_explosoes_mina}",
+            True,
+            cor_m
+        )
+        surf_minas.set_alpha(195)
+        superficie.blit(surf_minas, (offset_info_x, 45))
+        offset_info_x += surf_minas.get_width() + 16
+
     for inimigo in inimigos:
         if isinstance(inimigo, Bigon):
             cor_b = (255, 85, 95) if inimigo.batidas_na_onda >= 2 else (224, 138, 76)
@@ -233,7 +250,8 @@ def desenhar_hud_superior(superficie, pontos, cristais, inimigos, config, fonte,
                 cor_b
             )
             surf_bigon.set_alpha(190)
-            superficie.blit(surf_bigon, (20 + surf_mult.get_width() + 18, 45))
+            superficie.blit(surf_bigon, (offset_info_x, 45))
+            offset_info_x += surf_bigon.get_width() + 16
 
 
 def desenhar_hud_jogador(superficie, jogador, config, fonte, fonte_mini):
@@ -398,7 +416,7 @@ def desenhar_menu_pausa(superficie, pontos, config, fonte_titulo, fonte, fonte_p
 
 
 def iniciar_nova_rodada(config, jogador, camera, mestre, propaganda):
-    from modificador import gerar_paredes_rodada, gerar_cristais
+    from modificador import gerar_paredes_rodada, gerar_cristais, gerar_minas_rodada
     from perigo import gerar_inimigos_rodada
 
     config.tempo_onda = 0.0
@@ -408,8 +426,9 @@ def iniciar_nova_rodada(config, jogador, camera, mestre, propaganda):
     propaganda.resetar()
     paredes = gerar_paredes_rodada(config)
     cristais = gerar_cristais(config, paredes)
+    minas = gerar_minas_rodada(config, paredes, cristais)
     inimigos = gerar_inimigos_rodada(config, paredes)
-    return paredes, cristais, inimigos
+    return paredes, cristais, minas, inimigos
 
 
 def main():
@@ -438,7 +457,8 @@ def main():
     camera = Camera(config)
     mestre = MestreHUD()
     propaganda = GerenciadorPropaganda()
-    paredes, cristais, inimigos = iniciar_nova_rodada(config, jogador, camera, mestre, propaganda)
+    paredes, cristais, minas, inimigos = iniciar_nova_rodada(config, jogador, camera, mestre, propaganda)
+    explosoes_visuais = []
     pontos = 0
     tempo_jogo = 0.0
     tempo_tela_cartas = 0.0
@@ -450,6 +470,17 @@ def main():
 
     estado = "JOGANDO"
     cartas_atuais = []
+    escolhas_restantes_onda = 0
+    total_escolhas_onda = 1
+
+    def abrir_selecao_cartas(reiniciar_fila=True):
+        nonlocal estado, tempo_tela_cartas, cartas_atuais, escolhas_restantes_onda, total_escolhas_onda
+        if reiniciar_fila:
+            total_escolhas_onda = 1 + config.stacks_de_novo
+            escolhas_restantes_onda = total_escolhas_onda
+        estado = "ESCOLHA_CARTA"
+        tempo_tela_cartas = 0.0
+        cartas_atuais = gerar_opcoes_cartas(config)
 
     def acionar_gameover(motivo, fonte_x=None):
         nonlocal estado, motivo_gameover, tempo_gameover, timer_hitstop
@@ -478,12 +509,9 @@ def main():
                 elif evento.key == pygame.K_c:
                     if estado == "JOGANDO":
                         config.multiplicador_onda_atual = calcular_multiplicador_por_tempo(config.tempo_onda, config)
-                        estado = "ESCOLHA_CARTA"
-                        tempo_tela_cartas = 0.0
-                        cartas_atuais = gerar_opcoes_cartas(config)
+                        abrir_selecao_cartas(reiniciar_fila=True)
                     elif estado == "ESCOLHA_CARTA":
-                        tempo_tela_cartas = 0.0
-                        cartas_atuais = gerar_opcoes_cartas(config)
+                        abrir_selecao_cartas(reiniciar_fila=False)
 
                 elif evento.key == pygame.K_b and estado == "JOGANDO":
                     ativar = not (config.perigo_bigon_ativo and config.errei_conta_ativo)
@@ -502,11 +530,14 @@ def main():
                     camera = Camera(config)
                     mestre = MestreHUD()
                     propaganda = GerenciadorPropaganda()
-                    paredes, cristais, inimigos = iniciar_nova_rodada(config, jogador, camera, mestre, propaganda)
+                    paredes, cristais, minas, inimigos = iniciar_nova_rodada(config, jogador, camera, mestre, propaganda)
+                    explosoes_visuais.clear()
                     pontos = 0
                     timer_hitstop = 0.0
                     timer_flash_parry = 0.0
                     tempo_gameover = 0.0
+                    escolhas_restantes_onda = 0
+                    total_escolhas_onda = 1
                     estado = "JOGANDO"
 
                 elif evento.key == pygame.K_ESCAPE and estado == "PAUSADO":
@@ -520,13 +551,24 @@ def main():
                     for carta in cartas_atuais:
                         if carta.rect.collidepoint(evento.pos):
                             aplicar_modificador(carta.id_mod, config, jogador, mestre, propaganda)
-                            paredes, cristais, inimigos = iniciar_nova_rodada(config, jogador, camera, mestre, propaganda)
-                            estado = "JOGANDO"
+                            escolhas_restantes_onda -= 1
+
+                            if escolhas_restantes_onda > 0:
+                                abrir_selecao_cartas(reiniciar_fila=False)
+                            else:
+                                paredes, cristais, minas, inimigos = iniciar_nova_rodada(config, jogador, camera, mestre, propaganda)
+                                explosoes_visuais.clear()
+                                estado = "JOGANDO"
                             break
 
         if estado == "JOGANDO":
             if timer_flash_parry > 0.0:
                 timer_flash_parry = max(0.0, timer_flash_parry - dt)
+
+            for exp in explosoes_visuais[:]:
+                exp["vida"] -= dt
+                if exp["vida"] <= 0.0:
+                    explosoes_visuais.remove(exp)
 
             if timer_hitstop > 0.0:
                 timer_hitstop = max(0.0, timer_hitstop - dt)
@@ -551,6 +593,37 @@ def main():
                         jogador.executar_parry_sucesso()
                         timer_hitstop = 0.11
                         timer_flash_parry = 0.22
+
+                for mina in minas[:]:
+                    mina.atualizar(dt)
+                    if jogador.parry_ativo and mina.colidiu_com_jogador(jogador, margem_extra=12.0):
+                        fuga_x = jogador.x - mina.x
+                        fuga_y = jogador.y - mina.y
+                        jogador.executar_parry_sucesso(fuga_x, fuga_y)
+                        minas.remove(mina)
+                        explosoes_visuais.append({"x": mina.x, "y": mina.y, "vida": 0.35, "max_vida": 0.35, "parry": True})
+                        timer_hitstop = 0.10
+                        timer_flash_parry = 0.20
+                    elif (
+                        jogador.timer_invulneravel_parry <= 0.0 and
+                        mina.colidiu_com_jogador(jogador) and
+                        estado == "JOGANDO"
+                    ):
+                        minas.remove(mina)
+                        explosoes_visuais.append({"x": mina.x, "y": mina.y, "vida": 0.45, "max_vida": 0.45, "parry": False})
+                        config.explosoes_mina_sofridas += 1
+                        timer_hitstop = 0.09
+
+                        recuo_x = jogador.x - mina.x
+                        recuo_y = jogador.y - mina.y
+                        comp_recuo = math.hypot(recuo_x, recuo_y)
+                        if comp_recuo > 0.001:
+                            jogador.dir_x = recuo_x / comp_recuo
+                            jogador.dir_y = recuo_y / comp_recuo
+                        jogador.velocidade_atual = max(jogador.velocidade_atual, jogador.vel_max * 0.9)
+
+                        if config.explosoes_mina_sofridas >= config.max_explosoes_mina:
+                            acionar_gameover("EXPLODIDO PELAS MINAS!", fonte_x=mina.x)
 
                 for inimigo in inimigos:
                     inimigo.atualizar(jogador, config, paredes, dt)
@@ -611,9 +684,7 @@ def main():
 
                 if len(cristais) == 0 and estado == "JOGANDO":
                     config.multiplicador_onda_atual = calcular_multiplicador_por_tempo(config.tempo_onda, config)
-                    estado = "ESCOLHA_CARTA"
-                    tempo_tela_cartas = 0.0
-                    cartas_atuais = gerar_opcoes_cartas(config)
+                    abrir_selecao_cartas(reiniciar_fila=True)
 
         elif estado == "ESCOLHA_CARTA":
             tempo_tela_cartas += dt
@@ -631,17 +702,29 @@ def main():
 
         for parede in paredes:
             parede.desenhar_sombra(tela, camera)
+        for mina in minas:
+            mina.desenhar_sombra(tela, camera)
         for cristal in cristais:
             cristal.desenhar_sombra(tela, camera)
         for inimigo in inimigos:
             inimigo.desenhar_sombra(tela, camera)
         jogador.desenhar_sombra(tela, camera)
 
-        entidades = cristais + paredes + inimigos + [jogador]
+        entidades = cristais + paredes + minas + inimigos + [jogador]
         entidades.sort(key=lambda obj: obj.sort_y if hasattr(obj, "sort_y") else obj.y)
 
         for entidade in entidades:
             entidade.desenhar(tela, camera)
+
+        for exp in explosoes_visuais:
+            ex, ey = mundo_para_tela(exp["x"], exp["y"], 8, camera)
+            prog = 1.0 - (exp["vida"] / exp["max_vida"])
+            raio_exp = int(16 + prog * 54)
+            cor_ext = (255, 240, 175) if exp["parry"] else (255, 95, 40)
+            cor_int = (255, 250, 230) if exp["parry"] else (255, 200, 65)
+            pygame.draw.circle(tela, cor_ext, (ex, ey), raio_exp, 4)
+            if prog < 0.65:
+                pygame.draw.circle(tela, cor_int, (ex, ey), max(4, int(raio_exp * 0.55)))
 
         if config.perigo_mestre_ativo:
             mestre.desenhar(tela, fonte_pequena, pausado=(estado in ("PAUSADO", "GAME_OVER")))
@@ -668,17 +751,19 @@ def main():
             lista_perigos.append("Propaganda")
         perigos_txt = ", ".join(lista_perigos) if lista_perigos else "Nenhum"
 
-        unicos_txt = ""
+        extras_txt = ""
+        if config.stacks_de_novo > 0:
+            extras_txt += f" | De novo:{config.stacks_de_novo}"
         if config.ossos_vidro_ativo:
-            unicos_txt += " | Ossos de Vidro"
+            extras_txt += " | Ossos de Vidro"
         if config.errei_conta_ativo:
-            unicos_txt += " | Errei a Conta"
+            extras_txt += " | Errei a Conta"
 
         resumo_mods = (
             f"Mais?:{config.stacks_mais} | Espaçoso:{config.stacks_espacoso} | "
-            f"Volta Aqui!:{config.stacks_volta_aqui} | Lerdo:{config.stacks_lerdo}/3 | "
-            f"Slide:{config.stacks_escorregou}/3 | WK:{config.stacks_brochou}/3 | "
-            f"Maze:{config.stacks_maze}{unicos_txt} | Perigos: {perigos_txt}"
+            f"Volta Aqui!:{config.stacks_volta_aqui} | Cabuum!:{config.stacks_cabuum} | "
+            f"Lerdo:{config.stacks_lerdo}/3 | Slide:{config.stacks_escorregou}/3 | "
+            f"WK:{config.stacks_brochou}/3 | Maze:{config.stacks_maze}{extras_txt} | Perigos: {perigos_txt}"
         )
         texto_mods = fonte_mini.render(resumo_mods, True, (210, 140, 150))
 
@@ -692,7 +777,7 @@ def main():
         tela.blit(texto_controles, (20, ALTURA - 28))
 
         desenhar_hud_jogador(tela, jogador, config, fonte_pequena, fonte_mini)
-        desenhar_radar(tela, jogador, cristais, paredes, inimigos, config)
+        desenhar_radar(tela, jogador, cristais, paredes, minas, inimigos, config)
 
         if config.perigo_propaganda_ativo and estado in ("JOGANDO", "PAUSADO"):
             propaganda.desenhar(
@@ -710,12 +795,21 @@ def main():
         elif estado == "ESCOLHA_CARTA":
             desenhar_fundo_selecao_cartas(tela, tempo_tela_cartas)
 
-            titulo_str = (
-                "ESCOLHA SUA AMEAÇA INICIAL"
-                if config.escolhas_cartas_realizadas == 0
-                else "ESCOLHA SEU PRÓXIMO DESAFIO"
-            )
-            cor_titulo = (255, 85, 95) if config.escolhas_cartas_realizadas == 0 else (255, 190, 80)
+            escolha_atual_num = (total_escolhas_onda - escolhas_restantes_onda) + 1
+            if config.escolhas_cartas_realizadas == 0:
+                titulo_str = "ESCOLHA SUA AMEAÇA INICIAL"
+                cor_titulo = (255, 85, 95)
+            elif total_escolhas_onda > 1:
+                if escolha_atual_num == 1:
+                    titulo_str = f"ESCOLHA SEU DESAFIO ({escolha_atual_num}/{total_escolhas_onda})"
+                    cor_titulo = (255, 190, 80)
+                else:
+                    titulo_str = f"DE NOVO! ESCOLHA EXTRA ({escolha_atual_num}/{total_escolhas_onda})"
+                    cor_titulo = (225, 125, 255)
+            else:
+                titulo_str = "ESCOLHA SEU PRÓXIMO DESAFIO"
+                cor_titulo = (255, 190, 80)
+
             titulo_tela = fonte_grande.render(titulo_str, True, cor_titulo)
             rect_titulo = titulo_tela.get_rect(center=(LARGURA // 2, 92))
             tela.blit(titulo_tela, rect_titulo)

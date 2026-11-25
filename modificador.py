@@ -21,6 +21,10 @@ class ConfigPartida:
         self.stacks_brochou = 0
         self.max_stacks_brochou = 3
         self.stacks_volta_aqui = 0          # Modificador acumulável: cristais fogem
+        self.stacks_cabuum = 0              # Modificador acumulável: +3 minas por stack
+        self.explosoes_mina_sofridas = 0    # 3 explosões = Game Over
+        self.max_explosoes_mina = 3
+        self.stacks_de_novo = 0             # Modificador acumulável raro: +1 escolha de carta por onda
         self.ossos_vidro_ativo = False      # Modificador único: remove o Parry
         self.errei_conta_ativo = False      # Modificador único: limita multiplicador a x3, x2, x1
 
@@ -57,7 +61,8 @@ def calcular_limites_tempo_onda(config):
         (1.3 if config.perigo_bigon_ativo else 0.0) +
         (1.1 if config.perigo_propaganda_ativo else 0.0) +
         (config.stacks_maze * 0.9) +
-        (config.stacks_volta_aqui * 0.7)
+        (config.stacks_volta_aqui * 0.7) +
+        (config.stacks_cabuum * 0.6)
     )
     tempo_base = 4.5 + fator_cristais + fator_arena + fator_perigos
     passo = 5.5 + (config.qtd_cristais * 0.10)
@@ -159,6 +164,69 @@ class Parede:
         t4 = mundo_para_tela(self.min_x, self.max_y, self.altura_z, camera)
         pygame.draw.polygon(superficie, COR_PAREDE_TOPO, [t1, t2, t3, t4])
         pygame.draw.polygon(superficie, COR_PAREDE_BORDA, [t1, t2, t3, t4], 2)
+
+
+class Mina:
+    """Mina terrestre gerada pelo modificador 'Cabuum!'. Pode ser pulada ou desarmada no Parry."""
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.z = 0.0
+        self.raio = 16
+        self.altura_pulo_seguro = 16.0
+        self.fase_pulso = random.uniform(0, math.pi * 2)
+
+    @property
+    def sort_y(self):
+        return self.y - 2.0
+
+    def atualizar(self, dt):
+        self.fase_pulso += dt * 5.5
+
+    def colidiu_com_jogador(self, jogador, margem_extra=0.0):
+        if jogador.z > self.altura_pulo_seguro:
+            return False
+        dist_xy = math.hypot(jogador.x - self.x, jogador.y - self.y)
+        return dist_xy < (jogador.raio + self.raio - 3 + margem_extra)
+
+    def desenhar_sombra(self, superficie, camera):
+        from main import mundo_para_tela, INCLINACAO_Y, COR_SOMBRA
+
+        sx, sy = mundo_para_tela(self.x, self.y, 0, camera)
+        largura = int(self.raio * 2.2)
+        altura = int(self.raio * 2.2 * INCLINACAO_Y)
+        pygame.draw.ellipse(superficie, COR_SOMBRA, (sx - largura // 2, sy - altura // 2, largura, altura))
+
+    def desenhar(self, superficie, camera):
+        from main import mundo_para_tela, INCLINACAO_Y
+
+        tx, ty = mundo_para_tela(self.x, self.y, 0, camera)
+        pulso = 0.5 + 0.5 * math.sin(self.fase_pulso)
+
+        raio_anel = int(self.raio + 4 + pulso * 3)
+        rect_anel = pygame.Rect(
+            tx - raio_anel,
+            ty - int(raio_anel * INCLINACAO_Y),
+            raio_anel * 2,
+            int(raio_anel * 2 * INCLINACAO_Y)
+        )
+        pygame.draw.ellipse(superficie, (190, 65, 45), rect_anel, 1)
+
+        largura_base = int(self.raio * 2.0)
+        altura_base = int(self.raio * 2.0 * INCLINACAO_Y)
+        rect_base = pygame.Rect(tx - largura_base // 2, ty - altura_base // 2 - 2, largura_base, altura_base)
+        pygame.draw.ellipse(superficie, (52, 54, 62), rect_base)
+        pygame.draw.ellipse(superficie, (28, 30, 36), rect_base, 2)
+
+        for ang_deg in (30, 150, 210, 330):
+            ang = math.radians(ang_deg)
+            px = tx + int(math.cos(ang) * (self.raio - 1))
+            py = (ty - 2) + int(math.sin(ang) * (self.raio - 1) * INCLINACAO_Y)
+            pygame.draw.circle(superficie, (95, 100, 112), (px, py), 3)
+
+        cor_led = (255, int(65 + 135 * pulso), 40)
+        pygame.draw.circle(superficie, (30, 26, 30), (tx, ty - 4), 6)
+        pygame.draw.circle(superficie, cor_led, (tx, ty - 4), 4)
 
 
 class Cristal:
@@ -339,6 +407,47 @@ def desenhar_icone_carta(superficie, id_mod, centro, cor_destaque):
         pygame.draw.line(superficie, (200, 220, 235), (ccx + 4, ccy + 10), (ccx + 11, ccy + 16), 2)
         pygame.draw.rect(superficie, cor_bota, (ccx + 8, ccy + 14, 11, 6), border_radius=2)
         pygame.draw.rect(superficie, cor_cano, (ccx + 8, ccy + 12, 5, 4), border_radius=1)
+
+    elif id_mod == "CABUUM":
+        bx, by = cx - 2, cy + 4
+        pygame.draw.circle(superficie, (52, 56, 66), (bx, by), 16)
+        pygame.draw.circle(superficie, (95, 102, 118), (bx, by), 16, 2)
+        pygame.draw.circle(superficie, (125, 132, 148), (bx - 5, by - 5), 4)
+
+        pygame.draw.rect(superficie, (80, 84, 96), (bx + 6, by - 18, 7, 6), border_radius=1)
+        pygame.draw.lines(superficie, (210, 175, 115), False, [(bx + 11, by - 18), (bx + 16, by - 24), (bx + 21, by - 22)], 2)
+
+        fx, fy = bx + 22, by - 22
+        pygame.draw.circle(superficie, (255, 120, 45), (fx, fy), 5)
+        pygame.draw.circle(superficie, (255, 235, 110), (fx, fy), 2)
+        for ang_deg in range(0, 360, 60):
+            ang = math.radians(ang_deg)
+            pygame.draw.line(
+                superficie,
+                (255, 195, 70),
+                (fx + math.cos(ang) * 4, fy + math.sin(ang) * 4),
+                (fx + math.cos(ang) * 8, fy + math.sin(ang) * 8),
+                2
+            )
+
+    elif id_mod == "DE_NOVO":
+        # Duas setas curvas formando um ciclo de repetição (+1 escolha)
+        rect_arco = pygame.Rect(cx - 20, cy - 20, 40, 40)
+        pygame.draw.arc(superficie, cor_destaque, rect_arco, math.radians(25), math.radians(175), 4)
+        pygame.draw.arc(superficie, cor_destaque, rect_arco, math.radians(205), math.radians(355), 4)
+
+        # Ponta da seta superior direita
+        p1 = (cx + 18, cy - 8)
+        pygame.draw.polygon(superficie, cor_destaque, [p1, (p1[0] - 9, p1[1] - 3), (p1[0] - 2, p1[1] - 10)])
+
+        # Ponta da seta inferior esquerda
+        p2 = (cx - 18, cy + 8)
+        pygame.draw.polygon(superficie, cor_destaque, [p2, (p2[0] + 9, p2[1] + 3), (p2[0] + 2, p2[1] + 10)])
+
+        # Brilho "+1" central
+        pygame.draw.line(superficie, (255, 255, 255), (cx - 6, cy), (cx + 2, cy), 2)
+        pygame.draw.line(superficie, (255, 255, 255), (cx - 2, cy - 4), (cx - 2, cy + 4), 2)
+        pygame.draw.line(superficie, (255, 255, 255), (cx + 6, cy - 4), (cx + 6, cy + 4), 2)
 
     elif id_mod == "LERDO":
         cor_corpo = (230, 175, 130)
@@ -579,6 +688,9 @@ class CartaModificador:
         elif self.tipo == "MOD_UNICO":
             texto_tag = "MODIFICADOR ÚNICO"
             cor_tag = (165, 225, 255)
+        elif self.tipo == "MOD_RARO":
+            texto_tag = "MODIFICADOR RARO"
+            cor_tag = (235, 145, 255)
         else:
             texto_tag = "MODIFICADOR"
             cor_tag = (150, 160, 180)
@@ -692,6 +804,51 @@ def gerar_cristais(config, paredes):
     return cristais
 
 
+def gerar_minas_rodada(config, paredes, cristais):
+    """Gera 3 minas por acúmulo de 'Cabuum!', mantendo distância segura de cristais e spawn."""
+    total_minas = config.stacks_cabuum * 3
+    if total_minas <= 0:
+        return []
+
+    minas = []
+    margem = 75
+    centro_x = 0.0
+    centro_y = config.mapa_profundidade / 2
+    dist_min_cristal = 115.0
+    dist_min_entre_minas = 85.0
+
+    for _ in range(total_minas):
+        for _tentativa in range(120):
+            mx = random.uniform(-config.mapa_largura / 2 + margem, config.mapa_largura / 2 - margem)
+            my = random.uniform(margem, config.mapa_profundidade - margem)
+
+            if math.hypot(mx - centro_x, my - centro_y) < 170:
+                continue
+
+            dentro_parede = False
+            for parede in paredes:
+                prox_x = max(parede.min_x, min(mx, parede.max_x))
+                prox_y = max(parede.min_y, min(my, parede.max_y))
+                if math.hypot(mx - prox_x, my - prox_y) < 36:
+                    dentro_parede = True
+                    break
+            if dentro_parede:
+                continue
+
+            perto_cristal = any(math.hypot(mx - c.x, my - c.y) < dist_min_cristal for c in cristais)
+            if perto_cristal:
+                continue
+
+            perto_mina = any(math.hypot(mx - m.x, my - m.y) < dist_min_entre_minas for m in minas)
+            if perto_mina:
+                continue
+
+            minas.append(Mina(mx, my))
+            break
+
+    return minas
+
+
 def gerar_opcoes_cartas(config):
     vel_fuga_atual = velocidade_fuga_cristal(config.stacks_volta_aqui)
     vel_fuga_prox = velocidade_fuga_cristal(config.stacks_volta_aqui + 1)
@@ -729,7 +886,30 @@ def gerar_opcoes_cartas(config):
             f"25% fogem | Vel: {vel_fuga_atual:.1f} -> {vel_fuga_prox:.1f}",
             (95, 235, 255)
         ),
+        (
+            "CABUUM",
+            "MODIFICADOR",
+            "Cabuum!",
+            "Adiciona minas\nna arena",
+            f"+3 minas ({config.stacks_cabuum * 3} -> {(config.stacks_cabuum + 1) * 3})\n3 explosões = Game Over",
+            (255, 125, 55)
+        ),
     ]
+
+    # Modificador RARO e acumulável: De novo (~22% de chance de entrar no pool da seleção)
+    if config.escolhas_cartas_realizadas > 0 and random.random() < 0.22:
+        escolhas_atual = 1 + config.stacks_de_novo
+        escolhas_prox = escolhas_atual + 1
+        disponiveis.append(
+            (
+                "DE_NOVO",
+                "MOD_RARO",
+                "De novo",
+                "Faz escolher\nmais uma vez",
+                f"Escolhas por onda: {escolhas_atual} -> {escolhas_prox}\n(Raro e acumulável)",
+                (225, 125, 255)
+            )
+        )
 
     if config.stacks_lerdo < config.max_stacks_lerdo:
         embalo_atual_pct = int(round((1.0 - config.stacks_lerdo * 0.20) * 100))
@@ -885,6 +1065,12 @@ def aplicar_modificador(id_mod, config, jogador, mestre, propaganda):
 
     elif id_mod == "VOLTA_AQUI":
         config.stacks_volta_aqui += 1
+
+    elif id_mod == "CABUUM":
+        config.stacks_cabuum += 1
+
+    elif id_mod == "DE_NOVO":
+        config.stacks_de_novo += 1
 
     elif id_mod == "LERDO":
         if config.stacks_lerdo < config.max_stacks_lerdo:
